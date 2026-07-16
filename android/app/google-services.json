@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "1002352742884",
+    "project_id": "vijay-sample-app",
+    "storage_bucket": "vijay-sample-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1002352742884:android:25a9b258b479c9037bf7f1",
+        "android_client_info": {
+          "package_name": "com.vijay.sample_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA5PqTDUKatuY0jKwmwX_YRhHFmFnyl6ak"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1002352742884:android:9f174301d55f93347bf7f1",
+        "android_client_info": {
+          "package_name": "com.vijay.sampleapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA5PqTDUKatuY0jKwmwX_YRhHFmFnyl6ak"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

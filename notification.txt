@@ -1,0 +1,564 @@
+================================================================================
+  PUSH NOTIFICATION SETUP — संपूर्ण मार्गदर्शक (Marathi)
+  Project: sample_app
+  Firebase Project: vijay-sample-app
+  Package Name: com.vijay.sampleapp
+================================================================================
+
+या फाईलमध्ये notification system कसा लिहायचा, प्रत्येक file चा उद्देश,
+का वापरायचा (WHY), आणि code कसा काम करतो — हे Marathi मध्ये समजावले आहे.
+
+
+================================================================================
+  1. OVERALL ARCHITECTURE (एकूण रचना)
+================================================================================
+
+Firebase Server (Cloud)
+        |
+        |  FCM (Firebase Cloud Messaging)
+        v
+   Device (Android / iOS)
+        |
+        +-- App BAND (Terminated)     --> Background Handler
+        +-- App Background            --> System Tray Notification
+        +-- App Foreground (Open)     --> Local Notification Banner
+
+
+Project Folder Structure:
+-------------------------
+lib/
+├── main.dart                                    # App start + initialize
+├── firebase_options.dart                        # Firebase config (auto)
+└── core/notifications/
+    ├── notification_constants.dart              # Constants (IDs, keys)
+    ├── notification_service.dart                # Main brain / service
+    ├── background_message_handler.dart          # Background FCM handler
+    └── models/
+        └── app_notification.dart                # Data model
+
+
+Packages (pubspec.yaml):
+------------------------
+firebase_core              --> Firebase initialize
+firebase_messaging         --> Remote push (FCM)
+flutter_local_notifications --> Foreground banner + local test
+permission_handler         --> Android 13+ permission
+
+
+================================================================================
+  2. notification_constants.dart — CONSTANTS FILE
+================================================================================
+
+LOCATION: lib/core/notifications/notification_constants.dart
+
+WHY (का वापरायचे?):
+-------------------
+- Channel ID, icon name, data keys — हे values अनेक files मध्ये repeat होऊ नयेत
+- एकाच ठिकाणी change केल्यास सर्व जागी update होते
+- Typo mistakes कमी होतात (enterprise best practice)
+- Backend team ला exact channel IDs / data keys सांगणे सोपे होते
+
+
+CODE:
+-----
+abstract final class NotificationConstants {
+  // Android notification channel — important alerts
+  static const String defaultChannelId = 'high_importance_channel';
+  static const String defaultChannelName = 'Important Alerts';
+  static const String defaultChannelDescription =
+      'Critical alerts, account updates, and time-sensitive messages.';
+
+  // Marketing / promotional notifications
+  static const String marketingChannelId = 'marketing_channel';
+  static const String marketingChannelName = 'Promotions';
+  static const String marketingChannelDescription =
+      'Offers, product updates, and promotional content.';
+
+  // Android notification icon (white silhouette on transparent)
+  static const String androidNotificationIcon = '@drawable/ic_notification';
+
+  // Data payload keys — Firebase message मधील extra data
+  static const String dataKeyRoute = 'route';   // deep link screen
+  static const String dataKeyType = 'type';     // notification type
+  static const String dataKeyId = 'id';         // order id, user id, etc.
+}
+
+
+EXPLANATION (स्पष्टीकरण):
+-------------------------
+1. defaultChannelId = 'high_importance_channel'
+   - Android 8+ वर प्रत्येक notification ला channel हवा
+   - AndroidManifest.xml मध्येही same ID वापरले आहे
+
+2. dataKeyRoute = 'route'
+   - User notification tap केल्यावर कोणत्या screen वर जायचे ते सांगते
+   - Example: "/orders/1234"
+
+3. androidNotificationIcon
+   - Android notification tray icon
+   - File: android/app/src/main/res/drawable/ic_notification.xml
+
+
+================================================================================
+  3. app_notification.dart — MODEL FILE
+================================================================================
+
+LOCATION: lib/core/notifications/models/app_notification.dart
+
+WHY (का वापरायचे?):
+-------------------
+- Firebase RemoteMessage, Local Notification Response — format वेगवेगळा असतो
+- AppNotification = एक unified model — app मध्ये सर्वत्र same format
+- UI, navigation, logging — सगळ्यासाठी clean data object
+- Factory methods = automatic conversion from different sources
+
+
+CODE:
+-----
+class AppNotification {
+  const AppNotification({
+    required this.title,
+    required this.body,
+    required this.data,
+    required this.receivedAt,
+    this.id,
+    this.channelId,
+    this.imageUrl,
+  });
+
+  final String? id;
+  final String title;
+  final String body;
+  final Map<String, dynamic> data;
+  final DateTime receivedAt;
+  final String? channelId;
+  final String? imageUrl;
+
+  // Getter — data map मधून route काढते
+  String? get route => data[NotificationConstants.dataKeyRoute] as String?;
+  String? get type => data[NotificationConstants.dataKeyType] as String?;
+
+  // Firebase message --> AppNotification
+  factory AppNotification.fromRemoteMessage(RemoteMessage message) { ... }
+
+  // User notification tap --> AppNotification
+  factory AppNotification.fromNotificationResponse(NotificationResponse response) { ... }
+
+  // Local notification साठी payload encode
+  String encodePayload() { ... }
+}
+
+
+EXPLANATION (स्पष्टीकरण):
+-------------------------
+Example Firebase message:
+{
+  "notification": { "title": "Order Shipped", "body": "Your order is on the way" },
+  "data": { "route": "/orders/1234", "type": "order_update" }
+}
+
+fromRemoteMessage() हे convert करते:
+  AppNotification(
+    title: "Order Shipped",
+    body: "Your order is on the way",
+    data: { "route": "/orders/1234", "type": "order_update" },
+    route getter returns: "/orders/1234"
+  )
+
+WHY encodePayload()?
+- Local notification tap झाल्यावर data परत मिळवायला
+- String format: "title=Hello&body=World&route=%2Fhome"
+
+
+================================================================================
+  4. background_message_handler.dart — BACKGROUND HANDLER
+================================================================================
+
+LOCATION: lib/core/notifications/background_message_handler.dart
+
+WHY (का वापरायचे?):
+-------------------
+- App BAND (killed/terminated) किंवा background मध्ये असताना FCM message येतो
+- Flutter मध्ये background handler TOP-LEVEL function असावा (class मध्ये नाही)
+- runApp() पूर्वी register करावा लागतो
+- @pragma('vm:entry-point') = Dart compiler ला function tree-shake करू देत नाही
+
+
+CODE:
+-----
+@pragma('vm:entry-point')
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  // Background isolate मध्ये Firebase init करावे लागते
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  debugPrint('[FCM Background] id=${message.messageId} data=${message.data}');
+
+  await NotificationService.instance.handleBackgroundMessage(message);
+}
+
+
+main.dart मध्ये register:
+-------------------------
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  // IMPORTANT: runApp() पूर्वी register करा
+  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+
+  await NotificationService.instance.initialize();
+  runApp(const SampleApp());
+}
+
+
+3 APP STATES:
+-------------
+| State       | Handler                              | Notification दिसते?     |
+|-------------|--------------------------------------|-------------------------|
+| Foreground  | FirebaseMessaging.onMessage          | Local banner (manual)   |
+| Background  | System + onMessageOpenedApp on tap   | System tray (automatic) |
+| Terminated  | Background handler + getInitialMessage| System tray (automatic)|
+
+
+================================================================================
+  5. notification_service.dart — MAIN SERVICE (मुख्य मेंदू)
+================================================================================
+
+LOCATION: lib/core/notifications/notification_service.dart
+
+WHY (का वापरायचे?):
+-------------------
+- Singleton pattern — app मध्ये एकच instance
+- सर्व notification logic एकाच ठिकाणी
+- UI screens ला direct Firebase code लिहावा लागत नाही
+- Testable, maintainable, enterprise architecture
+
+
+SINGLETON PATTERN:
+------------------
+class NotificationService {
+  NotificationService._();                          // private constructor
+  static final NotificationService instance = NotificationService._();
+}
+
+
+INITIALIZE FLOW:
+----------------
+initialize() {
+  1. _initializeLocalNotifications()   --> flutter_local_notifications setup
+  2. _createAndroidChannels()          --> Android channels create
+  3. _configureForegroundPresentation()--> iOS foreground banner enable
+  4. _registerMessageHandlers()        --> onMessage, onMessageOpenedApp
+  5. _handleLaunchNotification()       --> app notification वरूn open?
+  6. onTokenRefresh listener           --> token change झाल्यावर
+}
+
+
+IMPORTANT METHODS:
+------------------
+
+1) requestPermissions()
+   Android 13+: Permission.notification.request()
+   iOS: FirebaseMessaging.requestPermission()
+
+2) getToken()
+   Device चा unique FCM token — Firebase test message साठी
+
+3) subscribeToTopic('news')
+   सर्व users ला topic वर message पाठवता येतो
+
+4) showTestLocalNotification()
+   Firebase शिवाय local test notification
+
+5) onNotificationReceived (Stream)
+   Notification आल्यावर UI update
+
+6) onNotificationOpened (Stream)
+   User ने notification tap केल्यावर navigation
+
+
+FOREGROUND HANDLER (App open असताना):
+--------------------------------------
+FirebaseMessaging.onMessage.listen((message) async {
+  final appNotification = AppNotification.fromRemoteMessage(message);
+  _receivedController.add(appNotification);       // UI ला कळवते
+  await _showLocalNotification(appNotification);  // Banner दाखवते
+});
+
+WHY local notification foreground मध्ये?
+- Firebase default: foreground मध्ये notification AUTO दिसत नाही
+- म्हणून flutter_local_notifications ने manually banner show करतो
+
+
+LOCAL NOTIFICATION SHOW:
+------------------------
+_showLocalNotification(AppNotification notification) {
+  AndroidNotificationDetails(
+    channelId: 'high_importance_channel',
+    importance: Importance.high,
+    icon: '@drawable/ic_notification',
+  )
+  _localNotifications.show(title, body, details, payload);
+}
+
+
+================================================================================
+  6. main.dart — APP STARTUP
+================================================================================
+
+LOCATION: lib/main.dart
+
+CODE:
+-----
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Step 1: Firebase start
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  // Step 2: Background handler register (runApp पूर्वी!)
+  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+
+  // Step 3: Notification service start
+  await NotificationService.instance.initialize(
+    onNotificationTap: _handleNotificationTap,
+  );
+
+  // Step 4: Permission मागा
+  await NotificationService.instance.requestPermissions();
+
+  runApp(const SampleApp());
+}
+
+void _handleNotificationTap(AppNotification notification) {
+  // User notification tap केल्यावर
+  // Example: Navigator.push to notification.route
+  debugPrint('Opened: ${notification.route}');
+}
+
+
+ORDER IMPORTANT (क्रम महत्त्वाचा):
+----------------------------------
+1. WidgetsFlutterBinding.ensureInitialized()
+2. Firebase.initializeApp()
+3. onBackgroundMessage register
+4. NotificationService.initialize()
+5. requestPermissions()
+6. runApp()
+
+
+================================================================================
+  7. ANDROID SETUP FILES
+================================================================================
+
+FILE: android/app/src/main/AndroidManifest.xml
+-------------------------------------------------
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />  <!-- Android 13+ -->
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.VIBRATE" />
+
+<meta-data
+    android:name="com.google.firebase.messaging.default_notification_channel_id"
+    android:value="high_importance_channel" />
+<meta-data
+    android:name="com.google.firebase.messaging.default_notification_icon"
+    android:value="@drawable/ic_notification" />
+
+
+FILE: android/app/build.gradle.kts
+-----------------------------------
+compileOptions {
+    isCoreLibraryDesugaringEnabled = true   // flutter_local_notifications साठी
+}
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+}
+
+
+FILE: android/app/src/main/res/drawable/ic_notification.xml
+------------------------------------------------------------
+- White bell icon (notification tray साठी)
+- Color icon वापरू नका — Android system white करते
+
+
+================================================================================
+  8. iOS SETUP FILES
+================================================================================
+
+FILE: ios/Runner/Info.plist
+-----------------------------
+<key>UIBackgroundModes</key>
+<array>
+    <string>remote-notification</string>
+</array>
+
+FILE: ios/Runner/AppDelegate.swift
+-----------------------------------
+UNUserNotificationCenter.current().delegate = self
+application.registerForRemoteNotifications()
+
+Xcode (Manual):
+---------------
+1. ios/Runner.xcworkspace उघडा
+2. Runner target --> Signing & Capabilities
+3. + Push Notifications
+4. + Background Modes --> Remote notifications
+
+Firebase Console:
+-----------------
+Project Settings --> Cloud Messaging --> Apple app configuration
+--> APNs Auth Key (.p8) upload करा
+
+
+================================================================================
+  9. FIREBASE वरूN NOTIFICATION कसे पाठवायचे (Device Token वर)
+================================================================================
+
+STEP 1: App मधून FCM Token मिळवा
+---------------------------------
+final token = await NotificationService.instance.getToken();
+print(token);
+
+App home screen वर "FCM Token" दिसतो — copy करा.
+
+
+STEP 2: Firebase Console
+-------------------------
+1. https://console.firebase.google.com/
+2. Project: vijay-sample-app
+3. Messaging --> Create campaign --> Firebase Notification messages
+4. Title: "Hello"
+5. Body: "Test message"
+6. "Send test message" click
+7. FCM token paste करा
+8. "Test" click
+
+
+STEP 3: Phone वर तपासा
+-----------------------
+- App open   --> Banner + notification tray
+- Background --> Notification tray
+- Closed     --> Notification tray
+
+
+FIREBASE JSON (Backend/API साठी):
+---------------------------------
+{
+  "message": {
+    "token": "DEVICE_FCM_TOKEN_HERE",
+    "notification": {
+      "title": "Order Shipped",
+      "body": "Your order #1234 is on the way"
+    },
+    "data": {
+      "route": "/orders/1234",
+      "type": "order_update",
+      "id": "1234"
+    },
+    "android": {
+      "priority": "HIGH",
+      "notification": {
+        "channel_id": "high_importance_channel"
+      }
+    }
+  }
+}
+
+
+================================================================================
+  10. CODE USAGE EXAMPLES (App मध्ये कसे वापरायचे)
+================================================================================
+
+// Permission check
+final granted = await NotificationService.instance.requestPermissions();
+
+// Token मिळवा (Firebase test साठी)
+final token = await NotificationService.instance.getToken();
+
+// Topic subscribe (broadcast messages)
+await NotificationService.instance.subscribeToTopic('announcements');
+
+// Notification आल्यावर listen
+NotificationService.instance.onNotificationReceived.listen((notification) {
+  print('Received: ${notification.title}');
+  print('Body: ${notification.body}');
+  print('Route: ${notification.route}');
+});
+
+// Notification tap झाल्यावर listen (navigation)
+NotificationService.instance.onNotificationOpened.listen((notification) {
+  if (notification.route == '/orders/1234') {
+    // Navigator.push(...)
+  }
+});
+
+// Token refresh (backend ला update पाठवा)
+NotificationService.instance.onTokenRefresh.listen((newToken) {
+  // API call: saveTokenToServer(newToken);
+});
+
+// Local test notification
+await NotificationService.instance.showTestLocalNotification(
+  title: 'Test',
+  body: 'Hello from app',
+  route: '/home',
+);
+
+
+================================================================================
+  11. NOTIFICATION FLOW DIAGRAM (प्रवाह)
+================================================================================
+
+Firebase Console / Backend API
+         |
+         |  POST FCM message + device token
+         v
+    Google FCM Server
+         |
+         v
+    Your Phone (com.vijay.sampleapp)
+         |
+         +--[App OPEN]----> onMessage --> _showLocalNotification --> Banner
+         |
+         +--[App BACKGROUND]--> System shows notification in tray
+         |                      User taps --> onMessageOpenedApp --> navigate
+         |
+         +--[App KILLED]----> background_handler --> (data-only: show local)
+                               User taps --> getInitialMessage --> navigate
+
+
+================================================================================
+  12. COMMON PROBLEMS & FIXES
+================================================================================
+
+| Problem                          | Fix                                      |
+|----------------------------------|------------------------------------------|
+| Android notification नाही       | Request Permission press करा             |
+| Foreground banner नाही           | onMessage + _showLocalNotification       |
+| iOS notification नाही             | APNs key Firebase मध्ये upload करा       |
+| Token null                       | Real device, permission granted          |
+| Background message handle नाही   | onBackgroundMessage runApp पूर्वी register|
+| Gradle desugaring error          | isCoreLibraryDesugaringEnabled = true    |
+| Wrong project token              | vijay-sample-app project verify करा      |
+
+
+================================================================================
+  13. SUMMARY — प्रत्येक FILE चा एक ओळखपत्र
+================================================================================
+
+| File                          | काम                              | का?                    |
+|-------------------------------|----------------------------------|------------------------|
+| notification_constants.dart   | IDs, keys, channel names         | Repeat टाळणे, clean code|
+| app_notification.dart         | Unified data model               | Same format everywhere |
+| background_message_handler.dart| Background/terminated FCM       | App band असतानahi handle|
+| notification_service.dart     | Main logic, permissions, streams | Single brain           |
+| main.dart                     | Initialize everything            | App entry point        |
+| AndroidManifest.xml           | Permissions, default channel     | Android system config  |
+| AppDelegate.swift             | iOS push registration            | Apple push setup       |
+| firebase_options.dart         | Firebase project config          | Auto-generated         |
+
+
+================================================================================
+  END — notification.txt
+  Project: sample_app | Firebase: vijay-sample-app | Package: com.vijay.sampleapp
+================================================================================
