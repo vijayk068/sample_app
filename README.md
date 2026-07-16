@@ -636,5 +636,82 @@ Dispatch Notification
         ▼
 Navigate to Required Screen
 
+---
 
+## GitHub Login आणि Code Push (Command Line)
+
+### 1) GitHub CLI install (macOS)
+
+```bash
+brew install gh
+```
+
+### 2) GitHub login (command line)
+
+```bash
+gh auth login
+```
+
+Interactive prompts साठी हे select करा:
+
+1. **Where do you use GitHub?** → `GitHub.com`
+2. **Preferred protocol** → `HTTPS` (किंवा `SSH`)
+3. **Authenticate Git with your GitHub credentials?** → `Yes`
+4. **How would you like to authenticate?** → `Login with a web browser`
+
+Browser मध्ये GitHub login पूर्ण करा. Status check:
+
+```bash
+gh auth status
+```
+
+### 3) Remote add / set करा
+
+जर repo अजून remote वर नसेल:
+
+```bash
+# नवीन GitHub repo तयार करून remote जोडा
+gh repo create sample_app --public --source=. --remote=origin
+
+# किंवा existing repo URL जोडा
+git remote add origin https://github.com/YOUR_USERNAME/sample_app.git
+```
+
+Remote verify:
+
+```bash
+git remote -v
+```
+
+### 4) Code commit आणि push
+
+```bash
+git status
+git add .
+git commit -m "Initial commit"
+git branch -M main
+git push -u origin main
+```
+
+पुढील वेळेस फक्त:
+
+```bash
+git add .
+git commit -m "Your commit message"
+git push
+```
+
+### SSH वापरत असाल तर (optional)
+
+```bash
+# SSH key generate
+ssh-keygen -t ed25519 -C "your_email@example.com"
+
+# Key GitHub मध्ये add करा
+gh ssh-key add ~/.ssh/id_ed25519.pub --title "MacBook"
+
+# Remote SSH वर set करा
+git remote set-url origin git@github.com:YOUR_USERNAME/sample_app.git
+git push -u origin main
+```
 
